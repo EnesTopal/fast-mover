@@ -30,7 +30,7 @@
         </activity>
 
         <service
-            android:name=".BubbleService"
+            android:name=".bubble.BubbleService"
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"

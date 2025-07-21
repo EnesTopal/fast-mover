@@ -1,10 +1,7 @@
-package com.tpl.fast_mover
+package com.tpl.fast_mover.bubble
 
 
 import android.view.KeyEvent
-import android.view.LayoutInflater
-import android.view.View
-import androidx.core.app.ServiceCompat.startForeground
 import com.torrydo.floatingbubbleview.CloseBubbleBehavior
 import com.torrydo.floatingbubbleview.FloatingBubbleListener
 import com.torrydo.floatingbubbleview.helper.NotificationHelper
@@ -12,6 +9,9 @@ import com.torrydo.floatingbubbleview.helper.ViewHelper
 import com.torrydo.floatingbubbleview.service.expandable.BubbleBuilder
 import com.torrydo.floatingbubbleview.service.expandable.ExpandableBubbleService
 import com.torrydo.floatingbubbleview.service.expandable.ExpandedBubbleBuilder
+import com.tpl.fast_mover.uix.ExpandedScreen
+import com.tpl.fast_mover.R
+import com.tpl.fast_mover.uix.BubbleCompose
 
 
 class BubbleService : ExpandableBubbleService() {
@@ -71,8 +71,6 @@ class BubbleService : ExpandableBubbleService() {
     }
 
     override fun configExpandedBubble(): ExpandedBubbleBuilder? {
-
-
         return ExpandedBubbleBuilder(this)
             .expandedCompose {
                 ExpandedScreen(popBack = {minimize()})

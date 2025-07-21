@@ -1,7 +1,6 @@
-package com.tpl.fast_mover
+package com.tpl.fast_mover.uix
 
 
-import android.view.KeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column

@@ -1,4 +1,4 @@
-package com.tpl.fast_mover
+package com.tpl.fast_mover.bubble
 
 import android.content.BroadcastReceiver
 import android.content.Context
