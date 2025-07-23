@@ -34,12 +34,6 @@ fun ExpandedScreen(
     popBack: () -> Unit = {}
 ) {
 
-    var num by remember { mutableStateOf(0) }
-
-    var txt by remember {
-        mutableStateOf("")
-    }
-
     val items = remember { mutableStateListOf<String>() }
 
     LaunchedEffect(Unit) {
@@ -60,8 +54,6 @@ fun ExpandedScreen(
             Button(onClick = { popBack() }) {
                 Text(text = "pop back!")
             }
-
-            TextField(value = txt, onValueChange = {txt = it})
 
             LazyColumn(
                 modifier = Modifier

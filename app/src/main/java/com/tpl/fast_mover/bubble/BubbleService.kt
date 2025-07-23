@@ -41,8 +41,8 @@ class BubbleService : ExpandableBubbleService() {
             // set style for the bubble, fade animation by default
             .bubbleStyle(null)
             // set start location for the bubble, (x=0, y=0) is the top-left
-            .startLocation(100, 100)    // in dp
-            .startLocationPx(100, 100)  // in px
+            .startLocation(0, 100)    // in dp
+//            .startLocationPx(100, 100)  // in px
             // enable auto animate bubble to the left/right side when release, true by default
             .enableAnimateToEdge(true)
             // set close-bubble view
