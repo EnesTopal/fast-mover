@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -139,9 +140,15 @@ fun MainScreen() {
                 Text(destPath, modifier = Modifier.weight(1f))
             }
 
+
             Button(onClick = {
-                val svcIntent = Intent(context, BubbleService::class.java)
+                val svcIntent = Intent(context, BubbleService::class.java).apply {
+                    putExtra("sourceUri", sourceUri)
+                    putExtra("destUri", destUri)
+                }
                 ContextCompat.startForegroundService(context, svcIntent)
+                Log.d("MainScreen", "Kaynak: $sourceUri, Hedef: $destUri")
+                Log.d("MainScreen", "Balon servisi başlatılıyor")
                 if (context is ComponentActivity) context.finish()
             }) {
                 Text("Balonu Başlat")
