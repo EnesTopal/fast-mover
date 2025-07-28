@@ -17,14 +17,12 @@ import com.torrydo.floatingbubbleview.service.expandable.ExpandedBubbleBuilder
 import com.tpl.fast_mover.uix.ExpandedScreen
 import com.tpl.fast_mover.R
 import com.tpl.fast_mover.uix.BubbleCompose
+import com.tpl.fast_mover.util.BubbleState.lastMovedFileName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.coroutines.coroutineContext
 
 
 class BubbleService : ExpandableBubbleService() {
@@ -34,7 +32,6 @@ class BubbleService : ExpandableBubbleService() {
 
     private var watchJob: Job? = null
     private val seenFileNames = mutableSetOf<String>()
-    val lastMovedFileName = MutableStateFlow<String?>(null)
 
 
     override fun startNotificationForeground() {
@@ -44,20 +41,6 @@ class BubbleService : ExpandableBubbleService() {
         startForeground(noti.notificationId, noti.defaultNotification())
     }
 
-//    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-//        sourceUri = intent?.getParcelableExtra("sourceUri")
-//        destUri = intent?.getParcelableExtra("destUri")
-//        Log.d("BubbleService", "Source URI: $sourceUri, Dest URI: $destUri")
-//
-//        if (sourceUri != null && destUri != null) {
-//            watchJob?.cancel() // varsa eski job iptal et
-//            watchJob = CoroutineScope(Dispatchers.IO).launch {
-//                startWatching(sourceUri!!, destUri!!)
-//            }
-//        }
-//
-//        return super.onStartCommand(intent, flags, startId)
-//    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         sourceUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -106,14 +89,14 @@ class BubbleService : ExpandableBubbleService() {
             .bubbleCompose {
                 BubbleCompose(expand = { expand() })
             }
+            // enable auto animate bubble to the left/right side when release, true by default
+            .enableAnimateToEdge(true)
             .forceDragging(true)
             // set style for the bubble, fade animation by default
             .bubbleStyle(null)
             // set start location for the bubble, (x=0, y=0) is the top-left
-            .startLocation(0, 100)    // in dp
+            .startLocation(0,100)    // in dp
 //            .startLocationPx(100, 100)  // in px
-            // enable auto animate bubble to the left/right side when release, true by default
-            .enableAnimateToEdge(true)
             // set close-bubble view
             .closeBubbleView(
                 ViewHelper.fromDrawable(
@@ -141,7 +124,8 @@ class BubbleService : ExpandableBubbleService() {
                 ) {
                 }
 
-                override fun onFingerDown(x: Float, y: Float) {}
+                override fun onFingerDown(x: Float, y: Float) {
+                }
             })
 
     }
@@ -163,43 +147,15 @@ class BubbleService : ExpandableBubbleService() {
                 }
                 null
             }
-            .startLocation(0, 0)
+            .startLocation(0,50)
             .draggable(true)
             .style(null)
             .fillMaxWidth(false)
             .enableAnimateToEdge(true)
             .dimAmount(0.5f)
+
     }
 
-//    private suspend fun startWatching(source: Uri, dest: Uri) {
-//        val contentResolver = applicationContext.contentResolver
-//
-//        val sourceRoot = DocumentFile.fromTreeUri(applicationContext, source)
-//        val destRoot = DocumentFile.fromTreeUri(applicationContext, dest)
-//
-//        if (sourceRoot == null || destRoot == null) return
-//
-//        while (coroutineContext.isActive) {
-//            val files = sourceRoot.listFiles()
-//            for (file in files) {
-//                val name = file.name ?: continue
-//                if (!seenFileNames.contains(name)) {
-//                    seenFileNames.add(name)
-//
-//                    try {
-//                        Log.d("BubbleService", "Moving file: $name")
-//                        moveFile(file, destRoot)
-//                    } catch (e: Exception) {
-//                        Log.e("BubbleService", "Error moving file: $name", e)
-//                        e.printStackTrace()
-//                        // hataları logla, şu anlık atlıyoruz
-//                    }
-//                }
-//            }
-//
-//            delay(5000) // her 5 saniyede bir kontrol et
-//        }
-//    }
 
     private suspend fun startWatching(sourceDir: Uri, destDir: Uri) {
         val sourceDocDir = DocumentFile.fromTreeUri(this, sourceDir) ?: return
@@ -208,7 +164,7 @@ class BubbleService : ExpandableBubbleService() {
         val existingFileNames = sourceDocDir.listFiles().mapNotNull { it.name }.toMutableSet()
 
         while (true) {
-            delay(2000) // Her 2 saniyede bir kontrol
+            delay(2000) // Check every 2 seconds
 
             val currentFiles = sourceDocDir.listFiles()
             val newFiles = currentFiles.filter { it.name != null && it.name !in existingFileNames }
@@ -230,24 +186,25 @@ class BubbleService : ExpandableBubbleService() {
     private fun moveFile(sourceFile: DocumentFile, destDir: DocumentFile) {
         val context = applicationContext
         val resolver = context.contentResolver
+        val deletingFileName = sourceFile.name ?: "unknown_file"
 
         val inputStream = resolver.openInputStream(sourceFile.uri)
         if (inputStream == null) {
-            println("InputStream null: ${sourceFile.name}")
+            Log.d("BubbleService","InputStream null: ${sourceFile.name}")
             return
         }
 
         val mimeType = sourceFile.type ?: "application/octet-stream"
         val destFile = destDir.createFile(mimeType, sourceFile.name ?: "moved_file")
         if (destFile == null) {
-            println("Dest file creation failed for ${sourceFile.name}")
+            Log.d("BubbleService","Dest file creation failed for ${sourceFile.name}")
             inputStream.close()
             return
         }
 
         val outputStream = resolver.openOutputStream(destFile.uri)
         if (outputStream == null) {
-            println("OutputStream null: ${destFile.name}")
+            Log.d("BubbleService","OutputStream null: ${destFile.name}")
             inputStream.close()
             return
         }
@@ -259,13 +216,16 @@ class BubbleService : ExpandableBubbleService() {
                 }
             }
 
+            Log.d("BubbleService","Moved: ${sourceFile.name} to ${destFile.name}")
             val deleted = sourceFile.delete()
-            println("Moved: ${sourceFile.name}, deleted: $deleted")
+            Log.d("BubbleService","Moved: ${sourceFile.name}, deleted: $deleted")
         } catch (e: Exception) {
-            println("Move failed for ${sourceFile.name}: ${e.message}")
+            Log.d("BubbleService","Move failed for ${sourceFile.name}: ${e.message}")
         }
 
-        lastMovedFileName.value = sourceFile.name
+        CoroutineScope(Dispatchers.Main).launch {
+            lastMovedFileName.value = deletingFileName
+        }
     }
 
 

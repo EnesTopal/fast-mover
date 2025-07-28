@@ -1,6 +1,7 @@
 package com.tpl.fast_mover.uix
 
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -12,8 +13,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
@@ -40,31 +46,67 @@ fun ExpandedScreen(
 ) {
     val lastMovedFile by lastMovedFileFlow.collectAsState()
 
-    Column(
+    androidx.compose.material3.Card(
         modifier = Modifier
-            .fillMaxWidth()
-            .padding(10.dp)
-            .background(Color.LightGray),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+            .padding(16.dp)
+            .fillMaxWidth(),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+        elevation = androidx.compose.material3.CardDefaults.cardElevation(6.dp)
     ) {
-        Text("Balon Aktif")
-        Spacer(modifier = Modifier.height(12.dp))
+        Column(
+            modifier = Modifier
+                .background(Color(0xFFF5F5F5))
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "📦 Fast Mover",
+                fontSize = 20.sp,
+                color = Color(0xFF333333)
+            )
 
-        if (lastMovedFile != null) {
-            Text("Son Taşınan Dosya: $lastMovedFile")
-        }
+            Spacer(Modifier.height(12.dp))
 
-        Spacer(modifier = Modifier.height(24.dp))
+            if (lastMovedFile != null) {
+                Text(
+                    text = "Last Moved File:",
+                    fontSize = 14.sp,
+                    color = Color.DarkGray
+                )
+                Text(
+                    text = lastMovedFile ?: "",
+                    fontSize = 16.sp,
+                    color = Color.Black,
+                    modifier = Modifier
+                        .padding(8.dp)
+                        .background(Color.White, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
 
-        Button(onClick = onStopService) {
-            Text("Servisi Durdur")
-        }
+            Spacer(Modifier.height(24.dp))
 
-        Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Button(
+                    onClick = popBack,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("↩️ Back")
+                }
 
-        Button(onClick = popBack) {
-            Text("Geri Dön")
+                Button(
+                    onClick = onStopService,
+                    modifier = Modifier.weight(1f),
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                        containerColor = Color.Red
+                    )
+                ) {
+                    Text("⛔ Stop Service ", color = Color.White)
+                }
+            }
         }
     }
 }

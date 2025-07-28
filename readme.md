@@ -1,54 +1,66 @@
 # 📂 Fast Mover – Android Floating File Transfer Tool
 
-Fast Mover, Android cihazınızda iki klasör arasında dosyaları otomatik olarak taşıyan bir yardımcı araçtır. Uygulama, foreground servis ile çalışan bir baloncuk (floating bubble) UI sunar ve kullanıcıdan alınan URI'lere göre kaynak klasöre yeni dosya geldikçe bunları hedef klasöre taşır.
+Fast Mover is a lightweight Android utility that automatically transfers files between two folders. It features a floating bubble UI powered by a foreground service, watching for newly added files in the source folder and moving them to the destination folder using SAF-based URIs.
 
-## 🚀 Özellikler
+## 🚀 Features
 
-- 📌 **Jetpack Compose** tabanlı modern UI
-- 📂 **SAF (Storage Access Framework)** ile kullanıcıdan alınan klasör URI’leri
-- 📤 Kaynaktaki yeni dosyaları hedef klasöre **otomatik taşıma**
-- 🫧 **Floating Bubble** UI ile baloncuk üzerinden kontrol
-- 🔔 Baloncukta son taşınan dosya adını canlı gösterme
-- 🛑 Uygulama kapalıyken yeniden başlama veya URI kaydı yok – **tamamen geçici ve tek seferlik oturum**
+- 📌 Modern UI built with **Jetpack Compose**
+- 📂  Folder selection via **SAF (Storage Access Framework)**
+- 📤  Automatically moves new files from source to destination
+- 🫧 **Floating Bubble** UI for interactio
+- 🔔 Displays the last moved file name on the bubble
+- 🛑 When the application is closed or restarted or URL registration
 
-## 🖼️ Ekran Görüntüsü
+## 🖼️ Use
 
-> *(Görsel eklenmesi önerilir)*
+[//]: # (![Fast Mover Gif]&#40;./screenshots/fast-mover.gif&#41;)
+<img src="/screenshots/fast-mover.gif" width="300"/>
 
-## ⚙️ Kullanım
+<!-- 
+<table>
+  <tr>
+    <td align="center">
+      🗑️ <strong>Main Screen</strong><br/>
+      <img src="screenshots/main_screen.png" alt="Main Screen" width="300"/><br/>
+    </td>
+    <td align="center">
+      ✅ <strong>Folder Choose Via </strong><br/>
+      <img src="screenshots/folder_choosing.png" alt="Delete Confirmation" width="300"/><br/>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      📂 <strong>Showing Last Moved File on Bubble</strong><br/>
+      <img src="screenshots/moved_file.png" alt="Last moved" width="300"/><br/>
+    </td>
+  </tr>
+</table>
+-->
 
-1. Uygulama açıldığında kaynak ve hedef klasörü seçin.
-2. Gerekli izinleri verin (overlay, all-files-access).
-3. Balon servisini başlatın.
-4. Kaynak klasöre yeni bir dosya geldiğinde otomatik olarak hedefe taşınacaktır.
-5. Balon üzerinde son taşınan dosya adı görünür.
+## ⚙️ How It Works
 
-## 📁 URI Erişimi
+1. Launch the app and select source & destination folders.
+2. Grant necessary permissions (overlay, all-files-access).
+3. Start the bubble service.
+4. When a new file appears in the source folder, it is automatically moved to the destination.
+5. The bubble shows the name of the last transferred file.
 
-Bu uygulama `DocumentFile` ve `ContentResolver` kullanarak `Uri` tabanlı işlem yapar. Bu sayede tüm Android sürümlerinde güvenli erişim sağlanır.
+## 📁 URI Access
 
-## 🔐 İzinler
+This app uses `DocumentFile` and `ContentResolver` for all file operations based on `Uri`. This ensures safe access across all Android versions.
+
+## 🔐 Permissions
 
 - `MANAGE_EXTERNAL_STORAGE` (Android 11+)
-- `SYSTEM_ALERT_WINDOW` (overlay için)
+- `SYSTEM_ALERT_WINDOW` (for overlay)
 - `FOREGROUND_SERVICE`
 
-## 💡 Teknik Notlar
+## 💡 Technical Notes
 
-- Servis başlatıldığında kaynak klasördeki mevcut dosyalar göz ardı edilir.
-- Yalnızca servis çalışırken yeni gelen dosyalar taşınır.
-- `FileObserver` yerine güvenli `DocumentFile` listesiyle manuel izleme yapılır.
-
-## 🛠️ Geliştirme
-
-- Dil: Kotlin
-- UI: Jetpack Compose
-- Balon Servis: `torrydo/floating-bubble-view`
-- Minimum API: 26
-
-## 🤝 Katkı
-
-Katkıda bulunmak isterseniz PR göndermekten çekinmeyin. Her öneri değerlidir!
+- Existing files in the source folder are ignored when the service starts.
+- Only files added while the service is active are considered.
+- User can't choose some folder because of SAF limitations caused by Android policies. (Root, Downloads etc.)
+- The floating bubble interface is adapted from the [Floating Bubble View](https://github.com/dofire/Floating-Bubble-View)
 
 ---
 

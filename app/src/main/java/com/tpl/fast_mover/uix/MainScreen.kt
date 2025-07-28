@@ -1,9 +1,9 @@
 package com.tpl.fast_mover.uix
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -21,11 +21,15 @@ import androidx.core.content.ContextCompat
 import com.tpl.fast_mover.bubble.BubbleService
 import com.tpl.fast_mover.util.toSimplePath
 
+private const val PREFS_NAME = "FastMoverPrefs"
+private const val KEY_SOURCE_URI = "sourceUri"
+private const val KEY_DEST_URI = "destUri"
+
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    // 1) İzni reaktif olarak takip et
     var hasOverlayPermission by remember {
         mutableStateOf(Settings.canDrawOverlays(context))
     }
@@ -35,26 +39,24 @@ fun MainScreen() {
         hasOverlayPermission = Settings.canDrawOverlays(context)
     }
 
-    var hasAllFilesAccess by remember {
+    var sourceUri by remember {
         mutableStateOf(
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
-                    Environment.isExternalStorageManager()
+            prefs.getString(KEY_SOURCE_URI, null)?.let { Uri.parse(it) }
         )
     }
-    val allFilesAccessLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) {
-        // Kullanıcı geri döndüğünde kontrolü yenile
-        hasAllFilesAccess = Environment.isExternalStorageManager()
+    var sourcePath by remember {
+        mutableStateOf(sourceUri?.toSimplePath() ?: "Didn't Selected")
     }
 
-    // 2) Kaynak ve hedef klasör URI & path state’leri
-    var sourceUri by remember { mutableStateOf<Uri?>(null) }
-    var sourcePath by remember { mutableStateOf("Seçilmedi") }
-    var destUri by remember { mutableStateOf<Uri?>(null) }
-    var destPath by remember { mutableStateOf("Seçilmedi") }
+    var destUri by remember {
+        mutableStateOf(
+            prefs.getString(KEY_DEST_URI, null)?.let { Uri.parse(it) }
+        )
+    }
+    var destPath by remember {
+        mutableStateOf(destUri?.toSimplePath() ?: "Didn't Selected")
+    }
 
-    // 3) Klasör seçme launcher’ları
     val pickSourceLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -64,8 +66,10 @@ fun MainScreen() {
             )
             sourceUri = it
             sourcePath = it.toSimplePath()
+            prefs.edit().putString(KEY_SOURCE_URI, it.toString()).apply()
         }
     }
+
     val pickDestLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -75,6 +79,7 @@ fun MainScreen() {
             )
             destUri = it
             destPath = it.toSimplePath()
+            prefs.edit().putString(KEY_DEST_URI, it.toString()).apply()
         }
     }
 
@@ -85,27 +90,9 @@ fun MainScreen() {
         verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        if (!hasAllFilesAccess) {
-            // ———————————————————————————————
-            // 1) All files access izni bloğu
-            Text("Uygulamanın tüm dosyalara erişimi için izin gerekli.")
-            Spacer(Modifier.height(12.dp))
-            Button(onClick = {
-                val intent = Intent(
-                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                    Uri.parse("package:${context.packageName}")
-                )
-                allFilesAccessLauncher.launch(intent)
-            }) {
-                Text("Tüm Dosyalara İzin Ver")
-            }
 
-        }
-
-        else if (!hasOverlayPermission) {
-            // ———————————————————————————————
-            // 2) Overlay izni bloğu
-            Text("Uygulamanın üstünde balon gösterebilmek için overlay izni gerekli.")
+        if (!hasOverlayPermission) {
+            Text("Overlay permission is required to display balloons on top of the application.")
             Spacer(Modifier.height(12.dp))
             Button(onClick = {
                 val intent = Intent(
@@ -114,18 +101,16 @@ fun MainScreen() {
                 )
                 overlayPermissionLauncher.launch(intent)
             }) {
-                Text("İzin Ver")
+                Text("Allow")
             }
 
         } else {
-            // ———————————————————————————————
-            // ASIL UYGULAMA BLOĞU (izin var)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Button(onClick = { pickSourceLauncher.launch(null) }) {
-                    Text("Kaynak Klasör Seç")
+                    Text("Select Source Folder")
                 }
                 Text(sourcePath, modifier = Modifier.weight(1f))
             }
@@ -135,23 +120,25 @@ fun MainScreen() {
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Button(onClick = { pickDestLauncher.launch(null) }) {
-                    Text("Hedef Klasör Seç")
+                    Text("Select Destination Folder")
                 }
                 Text(destPath, modifier = Modifier.weight(1f))
             }
 
-
-            Button(onClick = {
-                val svcIntent = Intent(context, BubbleService::class.java).apply {
-                    putExtra("sourceUri", sourceUri)
-                    putExtra("destUri", destUri)
+            Button(
+                enabled = sourceUri != null && destUri != null,
+                onClick = {
+                    val svcIntent = Intent(context, BubbleService::class.java).apply {
+                        putExtra("sourceUri", sourceUri)
+                        putExtra("destUri", destUri)
+                    }
+                    ContextCompat.startForegroundService(context, svcIntent)
+                    Log.d("BubbleService", "Kaynak: $sourceUri, Hedef: $destUri")
+                    Log.d("BubbleService", "Balloon started successfully.")
+                    if (context is ComponentActivity) context.finish()
                 }
-                ContextCompat.startForegroundService(context, svcIntent)
-                Log.d("MainScreen", "Kaynak: $sourceUri, Hedef: $destUri")
-                Log.d("MainScreen", "Balon servisi başlatılıyor")
-                if (context is ComponentActivity) context.finish()
-            }) {
-                Text("Balonu Başlat")
+            ) {
+                Text("Start Balloon Service")
             }
         }
     }
