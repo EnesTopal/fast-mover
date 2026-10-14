@@ -14,39 +14,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.runBlocking
-
 
 @Composable
 fun BubbleCompose(
-    show: () -> Unit = {},
-    hide: () -> Unit = {},
-    animateToEdge: () -> Unit = {},
     expand: () -> Unit = {}
 ) {
-
-//    val context = LocalContext.current
-//    val scope = rememberCoroutineScope()
-
-
     Row(
         modifier = Modifier
             .height(50.dp)
-            .clip(shape = RoundedCornerShape(100.dp))
+            .clip(RoundedCornerShape(100.dp))
             .background(Color.LightGray),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        IconButton(onClick = {
-            runBlocking {
-                expand()
-            }
-        }) {
-            Icon(
-                imageVector = Icons.Default.PlayArrow,
-                contentDescription = "play arrow"
-            )
+        // Note: with forceDragging(true) this click never fires — expand() is handled
+        // via FloatingBubbleListener.onFingerUp in BubbleService instead.
+        IconButton(onClick = expand) {
+            Icon(Icons.Default.PlayArrow, contentDescription = "expand")
         }
-
     }
 }
-
