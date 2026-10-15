@@ -4,423 +4,368 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.net.Uri
-import android.os.Build
+import android.content.res.Configuration
+import android.os.IBinder
+import android.provider.Settings
 import android.util.Log
-import android.view.KeyEvent
-import android.webkit.MimeTypeMap
-import androidx.compose.runtime.DisposableEffect
 import androidx.core.app.NotificationCompat
-import androidx.documentfile.provider.DocumentFile
-import com.torrydo.floatingbubbleview.CloseBubbleBehavior
-import com.torrydo.floatingbubbleview.FloatingBubbleListener
-import com.torrydo.floatingbubbleview.helper.ViewHelper
-import com.torrydo.floatingbubbleview.service.expandable.BubbleBuilder
-import com.torrydo.floatingbubbleview.service.expandable.ExpandableBubbleService
-import com.torrydo.floatingbubbleview.service.expandable.ExpandedBubbleBuilder
+import androidx.core.content.ContextCompat
+import com.tpl.fast_mover.MainActivity
 import com.tpl.fast_mover.R
-import com.tpl.fast_mover.uix.BubbleCompose
-import com.tpl.fast_mover.uix.ExpandedScreen
-import com.tpl.fast_mover.util.BubbleState.lastMovedFileName
+import com.tpl.fast_mover.core.AppPrefs
+import com.tpl.fast_mover.core.Location
+import com.tpl.fast_mover.core.TransferRecord
+import com.tpl.fast_mover.core.TransferState
+import com.tpl.fast_mover.core.TransferState.Status
+import com.tpl.fast_mover.overlay.BubbleController
+import com.tpl.fast_mover.transfer.FileMover
+import com.tpl.fast_mover.watch.FileSourceWatcher
+import com.tpl.fast_mover.watch.SafSourceWatcher
+import com.tpl.fast_mover.watch.SourceWatcher
+import com.tpl.fast_mover.watch.WatchEngine
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.io.InputStream
-import java.io.OutputStream
-import kotlin.math.hypot
 
-private const val TAG = "FastMover"
+/**
+ * Foreground service that owns the folder watcher and the floating bubble.
+ *
+ * Lifecycle rules that keep it stable on real devices:
+ * - `startForeground()` is the very first thing in `onCreate()`, before anything that can fail,
+ *   so the system never kills the app for a foreground service that did not start in time.
+ * - Configuration comes from [AppPrefs] only. A sticky restart (null intent) therefore resumes
+ *   with the same folders and, thanks to the high-water mark, also moves files that arrived
+ *   while the process was dead.
+ * - The bubble is (re)shown on every `onStartCommand`, idempotently.
+ */
+class BubbleService : Service(), BubbleController.Callbacks, WatchEngine.Listener {
 
-private const val PREFS_NAME      = "FastMoverPrefs"
-private const val KEY_SOURCE_URI  = "sourceUri"
-private const val KEY_SOURCE_PATH = "sourcePath"
-private const val KEY_DEST_URI    = "destUri"
-private const val KEY_DEST_PATH   = "destPath"
-
-private const val NOTIF_CHANNEL_ID = "fast_mover_service"
-private const val NOTIF_ID         = 101
-private const val ACTION_STOP      = "com.tpl.fast_mover.ACTION_STOP"
-
-class BubbleService : ExpandableBubbleService() {
-
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var watchJob: Job? = null
 
-    private var sourceUri: Uri?         = null
-    private var sourceFilePath: String? = null
-    private var destUri: Uri?           = null
-    private var destFilePath: String?   = null
+    private lateinit var prefs: AppPrefs
+    private lateinit var mover: FileMover
+    private lateinit var notificationManager: NotificationManager
+    private var controller: BubbleController? = null
 
-    private var touchStartX = 0f
-    private var touchStartY = 0f
+    private var paused = false
+    private var stopping = false
+    private var overlayError: String? = null
 
-    // True when we (not the system) triggered the expanded-view close.
-    // Used by DisposableEffect to decide whether to call minimize() on Back gesture.
-    private var expandedClosedByUs = false
-
-    // Dynamically registered so the notification tap can reach us without a manifest entry.
-    private val stopReceiver = object : BroadcastReceiver() {
+    private val commandReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == ACTION_STOP) {
-                Log.d(TAG, "stop broadcast received — stopping service")
-                stopSelf()
+            Log.d(TAG, "command ${intent.action}")
+            when (intent.action) {
+                ACTION_PAUSE -> pause()
+                ACTION_RESUME -> resume()
+                ACTION_STOP -> stopSelf()
             }
         }
     }
 
-    // ── Foreground notification ───────────────────────────────────────────────
+    override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun startNotificationForeground() {
-        Log.d(TAG, "startNotificationForeground")
-
-        // Broadcast-based stop: avoids the Android 12+ restriction on starting
-        // background services directly from a notification content intent.
-        val stopPi = PendingIntent.getBroadcast(
-            this, 0,
-            Intent(ACTION_STOP).setPackage(packageName),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        // minSdk = 30 (Android 11) so NotificationChannel is always available
-        val channel = NotificationChannel(
-            NOTIF_CHANNEL_ID, "Fast Mover", NotificationManager.IMPORTANCE_MIN
-        )
-        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-
-        val notification = NotificationCompat.Builder(this, NOTIF_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("Fast Mover is running")
-            .setContentText("Tap to stop the service")
-            .setContentIntent(stopPi)
-            .setOngoing(true)
-            .setSilent(true)
-            .setCategory(Notification.CATEGORY_SERVICE)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .build()
-
-        try {
-            startForeground(NOTIF_ID, notification)
-            Log.d(TAG, "startForeground OK")
-        } catch (e: Exception) {
-            Log.e(TAG, "startForeground FAILED: ${e.message}")
-            throw e
-        }
-    }
-
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
+    // ── lifecycle ─────────────────────────────────────────────────────────────
 
     override fun onCreate() {
+        super.onCreate()
         Log.d(TAG, "onCreate")
-        try {
-            super.onCreate()
-        } catch (e: Exception) {
-            Log.e(TAG, "super.onCreate FAILED: ${e.message}")
-            return
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(stopReceiver, IntentFilter(ACTION_STOP), RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(stopReceiver, IntentFilter(ACTION_STOP))
-        }
-        Log.d(TAG, "stopReceiver registered")
+        prefs = AppPrefs(this)
+        mover = FileMover(this)
+        notificationManager = getSystemService(NotificationManager::class.java)
+        createNotificationChannel()
+
+        TransferState.onServiceStarted(prefs.history)
+        prefs.source?.let { s -> prefs.dest?.let { d -> TransferState.setFolders(s.displayName(), d.displayName()) } }
 
         try {
-            minimize()
-            Log.d(TAG, "bubble shown")
+            startForeground(NOTIFICATION_ID, buildNotification())
         } catch (e: Exception) {
-            Log.e(TAG, "minimize FAILED: ${e.message}")
+            Log.e(TAG, "startForeground failed: ${e.message}")
+            stopping = true
+            stopSelf()
+            return
         }
+
+        ContextCompat.registerReceiver(
+            this, commandReceiver,
+            IntentFilter().apply { addAction(ACTION_PAUSE); addAction(ACTION_RESUME); addAction(ACTION_STOP) },
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+
+        if (!Settings.canDrawOverlays(this)) {
+            // Keep the service alive long enough for the notification to explain the problem.
+            fail("\"Display over other apps\" permission is missing – open the app and allow it")
+            stopping = true
+            stopSelf()
+            return
+        }
+        controller = BubbleController(this, prefs, this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Notification tap sends ACTION_STOP — stop the service completely.
-        if (intent?.action == ACTION_STOP) {
-            Log.d(TAG, "ACTION_STOP received — stopping")
-            stopSelf()
-            return START_NOT_STICKY
+        if (stopping) return START_NOT_STICKY
+        val restartedBySystem = intent == null
+        Log.d(TAG, "onStartCommand action=${intent?.action} restartedBySystem=$restartedBySystem")
+
+        when (intent?.action) {
+            ACTION_STOP -> { stopSelf(); return START_NOT_STICKY }
+            ACTION_PAUSE -> pause()
+            ACTION_RESUME -> resume()
+            else -> startWatching(resumeFromHighWater = restartedBySystem)
         }
+        controller?.ensureVisible()
+        return START_STICKY
+    }
 
-        Log.d(TAG, "onStartCommand intentNull=${intent == null}")
-
-        // Android restarts START_STICKY services with a null intent after killing them.
-        // Fall back to SharedPreferences so the watcher resumes without re-opening the app.
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-        sourceFilePath = intent?.getStringExtra("sourcePath")
-            ?: prefs.getString(KEY_SOURCE_PATH, null)
-
-        destFilePath = intent?.getStringExtra("destPath")
-            ?: prefs.getString(KEY_DEST_PATH, null)
-
-        sourceUri = if (sourceFilePath == null) {
-            intent?.let {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-                    it.getParcelableExtra("sourceUri", Uri::class.java)
-                else @Suppress("DEPRECATION") it.getParcelableExtra("sourceUri")
-            } ?: prefs.getString(KEY_SOURCE_URI, null)?.let { Uri.parse(it) }
-        } else null
-
-        destUri = if (destFilePath == null) {
-            intent?.let {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-                    it.getParcelableExtra("destUri", Uri::class.java)
-                else @Suppress("DEPRECATION") it.getParcelableExtra("destUri")
-            } ?: prefs.getString(KEY_DEST_URI, null)?.let { Uri.parse(it) }
-        } else null
-
-        Log.d(TAG, "src  path=$sourceFilePath  uri=$sourceUri")
-        Log.d(TAG, "dst  path=$destFilePath  uri=$destUri")
-
-        val hasSrc  = sourceUri != null || sourceFilePath != null
-        val hasDest = destUri   != null || destFilePath   != null
-
-        if (!hasSrc)  { Log.w(TAG, "no source — skipping watcher") }
-        if (!hasDest) { Log.w(TAG, "no dest — skipping watcher") }
-
-        if (hasSrc && hasDest) {
-            watchJob?.cancel()
-            watchJob = serviceScope.launch {
-                when {
-                    sourceFilePath != null -> startWatchingFile(sourceFilePath!!)
-                    sourceUri      != null -> startWatchingUri(sourceUri!!)
-                }
-            }
-        }
-
-        return super.onStartCommand(intent, flags, startId)
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        controller?.onConfigurationChanged()
     }
 
     override fun onDestroy() {
         Log.d(TAG, "onDestroy")
-        super.onDestroy()
+        stopping = true
         watchJob?.cancel()
-        serviceScope.cancel()
-        try { unregisterReceiver(stopReceiver) } catch (_: Exception) {}
+        ioScope.cancel()
+        controller?.hideAll()
+        controller = null
+        runCatching { unregisterReceiver(commandReceiver) }
+        TransferState.onServiceStopped()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        super.onDestroy()
     }
 
-    // ── Bubble configuration ──────────────────────────────────────────────────
+    // ── watching ──────────────────────────────────────────────────────────────
 
-    override fun configBubble(): BubbleBuilder? {
-        Log.d(TAG, "configBubble")
-        return BubbleBuilder(this)
-            .triggerClickablePerimeterPx(5f)
-            .bubbleCompose { BubbleCompose(expand = {}) }
-            .enableAnimateToEdge(true)
-            // forceDragging(true) is required for drag to work with bubbleCompose.
-            // Clicks are detected manually in onFingerUp below.
-            .forceDragging(true)
-            .bubbleStyle(null)
-            .startLocation(0, 100)
-            .closeBubbleView(
-                ViewHelper.fromDrawable(this, R.drawable.ic_launcher_foreground, 60, 60)
-            )
-            .closeBubbleStyle(null)
-            .closeBehavior(CloseBubbleBehavior.FIXED_CLOSE_BUBBLE)
-            .distanceToClose(100)
-            .bottomBackground(false)
-            .addFloatingBubbleListener(object : FloatingBubbleListener {
-                override fun onFingerDown(x: Float, y: Float) {
-                    touchStartX = x; touchStartY = y
-                }
-                override fun onFingerMove(x: Float, y: Float) {}
-                override fun onFingerUp(x: Float, y: Float) {
-                    val dist = hypot((x - touchStartX).toDouble(), (y - touchStartY).toDouble())
-                    Log.d(TAG, "fingerUp dist=${"%.1f".format(dist)}")
-                    if (dist < 20.0) {
-                        Log.d(TAG, "tap → expand()")
-                        expand()
-                    }
-                }
-            })
-    }
+    private fun startWatching(resumeFromHighWater: Boolean) {
+        watchJob?.cancel()
+        watchJob = null
+        paused = false
 
-    override fun configExpandedBubble(): ExpandedBubbleBuilder? {
-        Log.d(TAG, "configExpandedBubble")
-        return ExpandedBubbleBuilder(this)
-            .expandedCompose {
-                // On Android 12+ the system Back gesture removes the overlay window before
-                // onDispatchKeyEvent fires. DisposableEffect detects the disposal and calls
-                // minimize() so the bubble reappears, unless we closed it ourselves.
-                DisposableEffect(Unit) {
-                    onDispose {
-                        if (!expandedClosedByUs) {
-                            Log.d(TAG, "expanded view closed by system — restoring bubble")
-                            serviceScope.launch(Dispatchers.Main) {
-                                runCatching { minimize() }
-                            }
-                        }
-                        expandedClosedByUs = false
-                    }
-                }
-                ExpandedScreen(
-                    popBack = {
-                        expandedClosedByUs = true
-                        minimize()
-                    },
-                    lastMovedFileFlow = lastMovedFileName,
-                    onStopService = {
-                        expandedClosedByUs = true
-                        stopSelf()
-                    }
-                )
-            }
-            .onDispatchKeyEvent { event ->
-                if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-                    expandedClosedByUs = true
-                    minimize()
-                    true    // consume so system doesn't also handle it
-                } else null
-            }
-            .startLocation(0, 50)
-            .draggable(true)
-            .style(null)
-            .fillMaxWidth(false)
-            .enableAnimateToEdge(true)
-            .dimAmount(0.5f)
-    }
-
-    // ── Watchers ──────────────────────────────────────────────────────────────
-
-    private suspend fun startWatchingUri(sourceDir: Uri) {
-        Log.d(TAG, "watcher start — SAF  uri=$sourceDir")
-
-        val sourceDoc = try {
-            DocumentFile.fromTreeUri(this, sourceDir)
-        } catch (e: SecurityException) {
-            Log.e(TAG, "fromTreeUri SecurityException: ${e.message}"); null
+        val source = prefs.source
+        val dest = prefs.dest
+        if (source == null || dest == null) {
+            fail("Source or destination folder is not set – open the app"); return
         }
-        if (sourceDoc == null) { Log.e(TAG, "sourceDoc null — permission missing?"); return }
-        Log.d(TAG, "sourceDoc OK  canRead=${sourceDoc.canRead()}")
-
-        val existingNames = try {
-            sourceDoc.listFiles().mapNotNull { it.name }.toMutableSet()
-                .also { Log.d(TAG, "initial snapshot: ${it.size} files") }
-        } catch (e: SecurityException) {
-            Log.e(TAG, "initial listFiles failed: ${e.message}"); return
+        TransferState.setFolders(source.displayName(), dest.displayName())
+        if (!source.isAccessible(this)) {
+            fail("Lost access to ${source.displayName()} – reselect it in the app"); return
+        }
+        if (!dest.isAccessible(this)) {
+            fail("Lost access to ${dest.displayName()} – reselect it in the app"); return
         }
 
-        while (true) {
-            delay(2000)
-            val current = try {
-                sourceDoc.listFiles()
-            } catch (e: SecurityException) {
-                Log.e(TAG, "listFiles lost permission: ${e.message}"); return
-            }
-            val newFiles = current.filter { it.name != null && it.name !in existingNames }
-            if (newFiles.isNotEmpty()) Log.d(TAG, "${newFiles.size} new file(s) detected")
+        val watcher: SourceWatcher = when (source) {
+            is Location.Path -> FileSourceWatcher(File(source.absolutePath))
+            is Location.Tree -> SafSourceWatcher(contentResolver, source.uri)
+        }
+        val engine = WatchEngine(
+            watcher = watcher,
+            mover = mover,
+            dest = dest,
+            prefs = prefs,
+            sourceKey = source.key(),
+            resumeFromHighWater = resumeFromHighWater,
+            listener = this
+        )
+        TransferState.setStatus(Status.Watching)
+        updateNotification()
+        Log.d(TAG, "watching ${source.fullLabel()} → ${dest.fullLabel()} (highWater=$resumeFromHighWater)")
 
-            for (file in newFiles) {
-                val name = file.name ?: continue
-                existingNames.add(name)
-                Log.d(TAG, "moving (SAF): $name")
-                try {
-                    val mime = file.type ?: "application/octet-stream"
-                    move(
-                        input  = { contentResolver.openInputStream(file.uri) },
-                        output = { openDestOutput(mime, name) },
-                        delete = { file.delete() },
-                        name   = name
+        watchJob = ioScope.launch {
+            try {
+                engine.run()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "watcher died: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    fail(
+                        if (e is SecurityException) "Lost access to ${source.displayName()} – reselect it in the app"
+                        else (e.message ?: "Watcher stopped unexpectedly")
                     )
-                } catch (e: Exception) {
-                    Log.e(TAG, "move exception $name: ${e.message}")
                 }
             }
         }
     }
 
-    private suspend fun startWatchingFile(sourceDirPath: String) {
-        Log.d(TAG, "watcher start — File API  path=$sourceDirPath")
+    private fun pause() {
+        val status = TransferState.status.value
+        if (status !is Status.Watching && status !is Status.Moving) return
+        watchJob?.cancel()
+        watchJob = null
+        paused = true
+        TransferState.setStatus(Status.Paused)
+        updateNotification()
+    }
 
-        val sourceDir = File(sourceDirPath)
-        if (!sourceDir.exists() || !sourceDir.isDirectory) {
-            Log.e(TAG, "source dir missing: $sourceDirPath"); return
-        }
-        Log.d(TAG, "sourceDir OK  canRead=${sourceDir.canRead()}")
+    /** Files that arrived while paused are not moved: the watcher starts from a fresh snapshot. */
+    private fun resume() {
+        if (!paused) return
+        startWatching(resumeFromHighWater = false)
+    }
 
-        val existingNames = (sourceDir.listFiles()?.map { it.name } ?: emptyList())
-            .toMutableSet()
-            .also { Log.d(TAG, "initial snapshot: ${it.size} files") }
+    private fun fail(message: String) {
+        Log.w(TAG, "error state: $message")
+        watchJob?.cancel()
+        watchJob = null
+        paused = false
+        TransferState.setStatus(Status.Error(message))
+        updateNotification()
+    }
 
-        while (true) {
-            delay(2000)
-            val current = sourceDir.listFiles() ?: continue
-            val newFiles = current.filter { it.isFile && it.name !in existingNames }
-            if (newFiles.isNotEmpty()) Log.d(TAG, "${newFiles.size} new file(s) detected")
+    // ── WatchEngine.Listener (called from the IO thread) ──────────────────────
 
-            for (file in newFiles) {
-                existingNames.add(file.name)
-                Log.d(TAG, "moving (File): ${file.name}")
-                try {
-                    val ext  = file.name.substringAfterLast('.', "").lowercase()
-                    val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
-                        ?: "application/octet-stream"
-                    move(
-                        input  = { FileInputStream(file) },
-                        output = { openDestOutput(mime, file.name) },
-                        delete = { file.delete() },
-                        name   = file.name
-                    )
-                } catch (e: Exception) {
-                    Log.e(TAG, "move exception ${file.name}: ${e.message}")
-                }
-            }
+    override fun onWatching() {
+        if (!paused && !stopping) {
+            TransferState.setStatus(Status.Watching)
+            updateNotification()
         }
     }
 
-    // ── Move helpers ──────────────────────────────────────────────────────────
-
-    private fun openDestOutput(mimeType: String, fileName: String): OutputStream? {
-        val path = destFilePath
-        val uri  = destUri
-        return when {
-            path != null -> {
-                val dir = File(path).also { if (!it.exists()) it.mkdirs() }
-                Log.d(TAG, "dest File: $path")
-                FileOutputStream(File(dir, fileName))
-            }
-            uri != null -> {
-                val destDoc = try {
-                    DocumentFile.fromTreeUri(this, uri)
-                } catch (e: SecurityException) {
-                    Log.e(TAG, "dest SecurityException: ${e.message}"); null
-                }
-                if (destDoc == null) { Log.e(TAG, "destDoc null"); return null }
-                Log.d(TAG, "dest SAF  canWrite=${destDoc.canWrite()}")
-                val destFile = destDoc.createFile(mimeType, fileName)
-                if (destFile == null) { Log.e(TAG, "createFile returned null"); return null }
-                contentResolver.openOutputStream(destFile.uri)
-            }
-            else -> { Log.e(TAG, "no dest configured"); null }
-        }
+    override fun onMoving(name: String, percent: Int) {
+        TransferState.setStatus(Status.Moving(name, percent))
+        if (percent == 0) updateNotification()
     }
 
-    private fun move(
-        input: () -> InputStream?,
-        output: () -> OutputStream?,
-        delete: () -> Boolean,
-        name: String
-    ) {
-        val ins = input()  ?: run { Log.e(TAG, "input null: $name");  return }
-        val out = output() ?: run { Log.e(TAG, "output null: $name"); ins.close(); return }
+    override fun onResult(record: TransferRecord) {
+        TransferState.record(record)
+        prefs.history = TransferState.history.value
+        if (record.ok) prefs.movedTotal = prefs.movedTotal + 1
+        updateNotification()
+    }
+
+    // ── BubbleController.Callbacks (main thread) ──────────────────────────────
+
+    override fun onTogglePause() {
+        if (paused) resume() else pause()
+    }
+
+    override fun onStop() {
+        stopSelf()
+    }
+
+    override fun onOverlayError(t: Throwable) {
+        // The watcher keeps working; the notification tells the user the bubble is gone.
+        overlayError = t.message ?: t.javaClass.simpleName
+        updateNotification()
+    }
+
+    // ── notification ──────────────────────────────────────────────────────────
+
+    private fun createNotificationChannel() {
+        val channel = NotificationChannel(
+            CHANNEL_ID, "Fast Mover service", NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Shows what Fast Mover is watching and lets you pause or stop it"
+            setShowBadge(false)
+        }
+        notificationManager.createNotificationChannel(channel)
+    }
+
+    private fun buildNotification(): Notification {
+        val status = TransferState.status.value
+        val source = TransferState.sourceName.value
+        val dest = TransferState.destName.value
+        val moved = TransferState.movedCount.value
+
+        val title = when (status) {
+            is Status.Paused -> "Fast Mover paused"
+            is Status.Error -> "Fast Mover needs attention"
+            is Status.Moving -> "Fast Mover is moving a file"
+            else -> "Fast Mover is watching"
+        }
+        val folders = if (source.isNotEmpty()) "$source → $dest" else "No folders selected"
+        var text = when (status) {
+            is Status.Error -> status.message
+            is Status.Moving -> "${status.name} · $folders"
+            else -> "$folders · moved $moved"
+        }
+        overlayError?.let { text = "$text · bubble hidden ($it)" }
+
+        val openApp = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_bubble)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(openApp)
+            .setOngoing(true)
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+
+        if (status !is Status.Error) {
+            if (status is Status.Paused) {
+                builder.addAction(R.drawable.ic_play, "Resume", commandIntent(ACTION_RESUME, 1))
+            } else {
+                builder.addAction(R.drawable.ic_pause, "Pause", commandIntent(ACTION_PAUSE, 1))
+            }
+        }
+        builder.addAction(R.drawable.ic_stop, "Stop", commandIntent(ACTION_STOP, 2))
+        return builder.build()
+    }
+
+    private fun commandIntent(action: String, requestCode: Int): PendingIntent =
+        PendingIntent.getBroadcast(
+            this, requestCode,
+            Intent(action).setPackage(packageName),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+    private fun updateNotification() {
+        if (stopping) return
         try {
-            ins.use { i -> out.use { o -> i.copyTo(o) } }
-            val deleted = delete()
-            Log.d(TAG, "moved OK: $name  srcDeleted=$deleted")
-            lastMovedFileName.value = name
+            notificationManager.notify(NOTIFICATION_ID, buildNotification())
         } catch (e: Exception) {
-            Log.e(TAG, "copyTo failed $name: ${e.message}")
+            Log.w(TAG, "notify failed: ${e.message}")
+        }
+    }
+
+    companion object {
+        private const val TAG = "FastMover"
+        private const val CHANNEL_ID = "fast_mover_service"
+        private const val NOTIFICATION_ID = 101
+
+        const val ACTION_START = "com.tpl.fast_mover.action.START"
+        const val ACTION_PAUSE = "com.tpl.fast_mover.action.PAUSE"
+        const val ACTION_RESUME = "com.tpl.fast_mover.action.RESUME"
+        const val ACTION_STOP = "com.tpl.fast_mover.action.STOP"
+
+        /** Starts (or re-configures) the service from the settings stored in [AppPrefs]. */
+        fun start(context: Context) {
+            val intent = Intent(context, BubbleService::class.java).setAction(ACTION_START)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun stop(context: Context) {
+            context.stopService(Intent(context, BubbleService::class.java))
+        }
+
+        fun pause(context: Context) = sendCommand(context, ACTION_PAUSE)
+
+        fun resume(context: Context) = sendCommand(context, ACTION_RESUME)
+
+        private fun sendCommand(context: Context, action: String) {
+            context.sendBroadcast(Intent(action).setPackage(context.packageName))
         }
     }
 }
